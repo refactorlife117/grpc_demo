@@ -1,0 +1,44 @@
+// ============================================================================
+// user.proto — the CONTRACT for the User Service.
+//
+// In gRPC you describe your API first, in a .proto file. Both the server and
+// every client load this same file, so they agree on:
+//   - which methods exist        (the `service` block)
+//   - what each message contains (the `message` blocks)
+//
+// Over the network, messages are sent as compact binary (Protocol Buffers),
+// not JSON. Field NUMBERS (= 1, = 2 ...) are what actually go on the wire,
+// not the field names. That's why you must never change a field's number
+// once it's in use.
+// ============================================================================
+syntax = "proto3";
+
+package user;
+
+service UserService {
+  // Unary RPC: one request in, one response out (like a normal function call).
+  rpc CreateUser (CreateUserRequest) returns (User);
+  rpc GetUser    (GetUserRequest)    returns (User);
+
+  // Server-streaming RPC: one request in, a STREAM of responses out.
+  // The server pushes users one at a time over the same connection.
+  rpc ListUsers  (ListUsersRequest)  returns (stream User);
+}
+
+message User {
+  int32  id         = 1;
+  string name       = 2;
+  string email      = 3;
+  string created_at = 4;
+}
+
+message CreateUserRequest {
+  string name  = 1;
+  string email = 2;
+}
+
+message GetUserRequest {
+  int32 id = 1;
+}
+
+message ListUsersRequest {} // no input needed

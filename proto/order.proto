@@ -1,0 +1,45 @@
+// ============================================================================
+// order.proto — the CONTRACT for the Order Service.
+//
+// Order Service is interesting because it is BOTH:
+//   - a gRPC SERVER (the gateway calls it), and
+//   - a gRPC CLIENT (it calls User Service to check the user exists).
+// That second part is "service-to-service communication".
+// ============================================================================
+syntax = "proto3";
+
+package order;
+
+service OrderService {
+  rpc CreateOrder    (CreateOrderRequest)    returns (Order);
+  rpc GetOrdersByUser (GetOrdersByUserRequest) returns (OrderList);
+}
+
+message Order {
+  int32  id         = 1;
+  int32  user_id    = 2;
+  string product    = 3;
+  int32  quantity   = 4;
+  double price      = 5;
+  string created_at = 6;
+
+  // Filled in by asking User Service — the order table only stores user_id.
+  string user_name  = 7;
+}
+
+message CreateOrderRequest {
+  int32  user_id  = 1;
+  string product  = 2;
+  int32  quantity = 3;
+  double price    = 4;
+}
+
+message GetOrdersByUserRequest {
+  int32 user_id = 1;
+}
+
+// `repeated` = a list. This is a unary RPC that returns many orders at once,
+// compare with ListUsers in user.proto which STREAMS them one by one.
+message OrderList {
+  repeated Order orders = 1;
+}
