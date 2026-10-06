@@ -7,9 +7,20 @@
 require('dotenv').config();
 const { loadProto, grpc } = require('../shared/proto-loader');
 const pool = require('../shared/db');
+const { serverAuthInterceptor } = require('../shared/auth');
 
 const userProto = loadProto('user.proto').user;
 const PORT = process.env.USER_SERVICE_PORT || 50051;
+const SERVICE_NAME = 'user-service';
+
+// AUTHORIZATION POLICY: which services may call which methods.
+// order-service only needs to look users up, so that's all it gets
+// (least privilege). Anything not listed here is denied.
+const ACCESS_POLICY = {
+  '/user.UserService/CreateUser': ['gateway'],
+  '/user.UserService/GetUser':    ['gateway', 'order-service'],
+  '/user.UserService/ListUsers':  ['gateway'],
+};
 
 // Metadata = gRPC's version of HTTP headers. We use it to pass a request id
 // along the chain so you can follow ONE request through all the service logs.
@@ -89,7 +100,10 @@ const handlers = {
 // bind a port, done. createInsecure() = plaintext, fine for local learning.
 // In production you'd use grpc.ServerCredentials.createSsl(...) for TLS.
 // ---------------------------------------------------------------------------
-const server = new grpc.Server();
+// Every incoming call passes through the auth interceptor before a handler runs.
+const server = new grpc.Server({
+  interceptors: [serverAuthInterceptor(SERVICE_NAME, ACCESS_POLICY)],
+});
 server.addService(userProto.UserService.service, handlers);
 
 server.bindAsync(`0.0.0.0:${PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {

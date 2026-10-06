@@ -9,6 +9,7 @@ require('dotenv').config();
 const express = require('express');
 const crypto = require('crypto');
 const { loadProto, grpc } = require('../shared/proto-loader');
+const { clientAuthInterceptor } = require('../shared/auth');
 
 const userProto = loadProto('user.proto').user;
 const orderProto = loadProto('order.proto').order;
@@ -16,10 +17,16 @@ const orderProto = loadProto('order.proto').order;
 const PORT = process.env.GATEWAY_PORT || 3000;
 const USER_SERVICE_ADDR = process.env.USER_SERVICE_ADDR || 'localhost:50051';
 const ORDER_SERVICE_ADDR = process.env.ORDER_SERVICE_ADDR || 'localhost:50052';
+const SERVICE_NAME = 'gateway';
 
-// One long-lived client per service.
-const userClient = new userProto.UserService(USER_SERVICE_ADDR, grpc.credentials.createInsecure());
-const orderClient = new orderProto.OrderService(ORDER_SERVICE_ADDR, grpc.credentials.createInsecure());
+// One long-lived client per service. Each one signs its calls as "gateway",
+// with a token whose audience is the service it talks to.
+const userClient = new userProto.UserService(USER_SERVICE_ADDR, grpc.credentials.createInsecure(), {
+  interceptors: [clientAuthInterceptor(SERVICE_NAME, 'user-service')],
+});
+const orderClient = new orderProto.OrderService(ORDER_SERVICE_ADDR, grpc.credentials.createInsecure(), {
+  interceptors: [clientAuthInterceptor(SERVICE_NAME, 'order-service')],
+});
 
 // Turn a callback-style unary gRPC call into a Promise, attaching metadata.
 function call(client, method, request, reqId) {
@@ -32,6 +39,10 @@ function call(client, method, request, reqId) {
 }
 
 // gRPC has its own status codes. Map the common ones to HTTP.
+// UNAUTHENTICATED / PERMISSION_DENIED are left out on purpose: they're about
+// the GATEWAY's identity (bad keys or policy), not the HTTP client's, so they
+// fall through to 500. When end-user login is added, the gateway itself
+// will return 401/403.
 const GRPC_TO_HTTP = {
   [grpc.status.INVALID_ARGUMENT]: 400,
   [grpc.status.NOT_FOUND]: 404,

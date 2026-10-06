@@ -12,19 +12,42 @@
 require('dotenv').config();
 const { loadProto, grpc } = require('../shared/proto-loader');
 const pool = require('../shared/db');
+const { serverAuthInterceptor, clientAuthInterceptor } = require('../shared/auth');
 
 const orderProto = loadProto('order.proto').order;
 const userProto = loadProto('user.proto').user; // we need the User contract to call it
 
 const PORT = process.env.ORDER_SERVICE_PORT || 50052;
 const USER_SERVICE_ADDR = process.env.USER_SERVICE_ADDR || 'localhost:50051';
+const SERVICE_NAME = 'order-service';
+
+// Who may call US. Only the gateway talks to order-service.
+const ACCESS_POLICY = {
+  '/order.OrderService/CreateOrder':     ['gateway'],
+  '/order.OrderService/GetOrdersByUser': ['gateway'],
+};
 
 // ---------------------------------------------------------------------------
 // The gRPC CLIENT for User Service.
 // Created once and reused: under the hood it keeps one HTTP/2 connection open
 // and multiplexes all calls over it. You do NOT open a connection per call.
+//
+// The interceptor signs every outgoing call as "order-service" for the
+// audience "user-service". Calling code doesn't have to think about auth.
 // ---------------------------------------------------------------------------
-const userClient = new userProto.UserService(USER_SERVICE_ADDR, grpc.credentials.createInsecure());
+const userClient = new userProto.UserService(USER_SERVICE_ADDR, grpc.credentials.createInsecure(), {
+  interceptors: [clientAuthInterceptor(SERVICE_NAME, 'user-service')],
+});
+
+// Build metadata for an outgoing call from an incoming one.
+// Forward ONLY what downstream needs (the request id). Don't forward the whole
+// incoming metadata: it holds the gateway's token, and credentials should
+// never be passed along to the next hop. We sign our own.
+function outgoingMetadata(call) {
+  const md = new grpc.Metadata();
+  md.set('x-request-id', call.metadata.get('x-request-id')[0] || '-');
+  return md;
+}
 
 // Small helper that wraps the callback-style client call in a Promise.
 function getUser(id, metadata) {
@@ -62,19 +85,16 @@ const handlers = {
     }
 
     // ---- SERVICE-TO-SERVICE CALL -------------------------------------------
-    // Forward the incoming metadata (it contains x-request-id) so the
-    // user-service logs show the same id. This is "context propagation".
+    // Pass the request id along so user-service logs show the same id.
+    // This is "context propagation".
     let user;
     try {
       console.log(`[order-service] [${reqId}]   -> calling user-service GetUser(${user_id})`);
-      user = await getUser(user_id, call.metadata);
+      user = await getUser(user_id, outgoingMetadata(call));
       console.log(`[order-service] [${reqId}]   <- user-service replied: ${user.name}`);
     } catch (err) {
-      console.log(`[order-service] [${reqId}]   <- user-service error: ${err.code} ${err.details}`);
-      // Pass NOT_FOUND through as-is; anything else means user-service is
-      // down/broken, which is UNAVAILABLE from our caller's point of view.
-      const code = err.code === grpc.status.NOT_FOUND ? grpc.status.NOT_FOUND : grpc.status.UNAVAILABLE;
-      return callback({ code, message: `user check failed: ${err.details}` });
+      console.log(`[order-service] [${reqId}]   <- user-service error: ${grpc.status[err.code]} ${err.details}`);
+      return callback({ code: mapUserServiceError(err), message: `user check failed: ${err.details}` });
     }
     // ------------------------------------------------------------------------
 
@@ -94,9 +114,15 @@ const handlers = {
     const reqId = call.metadata.get('x-request-id')[0] || '-';
     console.log(`[order-service] [${reqId}] GetOrdersByUser user_id=${user_id}`);
 
+    // Again ask user-service, this time to enrich the result with the name.
+    let user;
     try {
-      // Again ask user-service, this time to enrich the result with the name.
-      const user = await getUser(user_id, call.metadata);
+      user = await getUser(user_id, outgoingMetadata(call));
+    } catch (err) {
+      return callback({ code: mapUserServiceError(err), message: `user lookup failed: ${err.details}` });
+    }
+
+    try {
       const { rows } = await pool.query(
         'SELECT * FROM orders WHERE user_id = $1 ORDER BY id',
         [user_id]
@@ -104,12 +130,32 @@ const handlers = {
       // `orders` matches the `repeated Order orders = 1;` field in the proto.
       callback(null, { orders: rows.map((r) => toOrder(r, user.name)) });
     } catch (err) {
-      callback({ code: err.code ?? grpc.status.INTERNAL, message: err.details || err.message });
+      callback({ code: grpc.status.INTERNAL, message: err.message });
     }
   },
 };
 
-const server = new grpc.Server();
+// Decide what OUR caller should see when user-service fails.
+//  - NOT_FOUND: a real answer about the data, pass it through.
+//  - UNAVAILABLE / DEADLINE_EXCEEDED: user-service is down or slow.
+//  - anything else, including UNAUTHENTICATED / PERMISSION_DENIED: that's OUR
+//    problem (bad keys or policy), not the end user's, so report INTERNAL.
+//    Passing it through would turn into a confusing 401/403 for the user.
+function mapUserServiceError(err) {
+  switch (err.code) {
+    case grpc.status.NOT_FOUND:
+      return grpc.status.NOT_FOUND;
+    case grpc.status.UNAVAILABLE:
+    case grpc.status.DEADLINE_EXCEEDED:
+      return grpc.status.UNAVAILABLE;
+    default:
+      return grpc.status.INTERNAL;
+  }
+}
+
+const server = new grpc.Server({
+  interceptors: [serverAuthInterceptor(SERVICE_NAME, ACCESS_POLICY)],
+});
 server.addService(orderProto.OrderService.service, handlers);
 
 server.bindAsync(`0.0.0.0:${PORT}`, grpc.ServerCredentials.createInsecure(), (err) => {

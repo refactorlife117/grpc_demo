@@ -2,11 +2,13 @@
   "name": "grpc-demo",
   "version": "1.0.0",
   "scripts": {
+    "keys:generate": "node scripts/generate-keys.js",
     "db:init": "node db/init.js",
     "user-service": "node user-service/server.js",
     "order-service": "node order-service/server.js",
     "gateway": "node gateway/server.js",
-    "start": "concurrently -n user,order,gateway -c blue,magenta,green \"npm:user-service\" \"npm:order-service\" \"npm:gateway\""
+    "start": "concurrently -n user,order,gateway -c blue,magenta,green \"npm:user-service\" \"npm:order-service\" \"npm:gateway\"",
+    "auth:demo": "node scripts/auth-demo.js"
   },
   "keywords": [],
   "author": "",
@@ -17,6 +19,7 @@
     "@grpc/proto-loader": "^0.8.1",
     "dotenv": "^18.0.5",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "pg": "^8.23.1"
   },
   "devDependencies": {
