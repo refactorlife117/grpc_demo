@@ -78,7 +78,7 @@ const handlers = {
     }
     // ------------------------------------------------------------------------
 
-    try {
+    try {                       
       const { rows } = await pool.query(
         'INSERT INTO orders (user_id, product, quantity, price) VALUES ($1, $2, $3, $4) RETURNING *',
         [user_id, product, quantity, price]
